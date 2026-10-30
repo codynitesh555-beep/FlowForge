@@ -195,9 +195,20 @@ export function createApiApp(dependencies: ApiDependencies): FastifyInstance {
       await dependencies.checkDatabaseReadiness();
       return reply.send({ status: 'ready' });
     } catch (error) {
+      const prismaError = error as {
+        code?: unknown;
+        meta?: { code?: unknown; message?: unknown; database_error?: unknown };
+      };
+
       request.log.error({
         errorType: error instanceof Error ? error.name : 'UNKNOWN_ERROR',
         diagnosticCode: safeErrorCode(error) ?? 'UNCLASSIFIED',
+        databaseCode: typeof prismaError.meta?.code === 'string' ? prismaError.meta.code : undefined,
+        databaseMessage: typeof prismaError.meta?.message === 'string'
+          ? prismaError.meta.message.slice(0, 300)
+          : typeof prismaError.meta?.database_error === 'string'
+            ? prismaError.meta.database_error.slice(0, 300)
+            : undefined,
       }, 'Database readiness check failed');
 
       return reply.code(503).send({ status: 'not_ready' });
