@@ -190,11 +190,16 @@ export function createApiApp(dependencies: ApiDependencies): FastifyInstance {
         503: z.object({ status: z.literal('not_ready') }),
       },
     },
-  }, async (_request, reply) => {
+  }, async (request, reply) => {
     try {
       await dependencies.checkDatabaseReadiness();
       return reply.send({ status: 'ready' });
-    } catch {
+    } catch (error) {
+      request.log.error({
+        errorType: error instanceof Error ? error.name : 'UNKNOWN_ERROR',
+        diagnosticCode: safeErrorCode(error) ?? 'UNCLASSIFIED',
+      }, 'Database readiness check failed');
+
       return reply.code(503).send({ status: 'not_ready' });
     }
   });
