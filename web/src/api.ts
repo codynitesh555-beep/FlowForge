@@ -50,7 +50,10 @@ async function request<T>(path: string, init: RequestInit = {}, accessToken?: st
 
 function refreshSession(): Promise<RefreshedSession> {
   if (!refreshInFlight) {
-    const current = request<RefreshedSession>('/v1/auth/refresh', { method: 'POST' })
+    const current = request<RefreshedSession>('/v1/auth/refresh', {
+      method: 'POST',
+      headers: { 'x-flowforge-csrf': '1' },
+    })
       .finally(() => {
         if (refreshInFlight === current) refreshInFlight = null;
       });

@@ -37,8 +37,9 @@ export function loadApiConfiguration(source: Readonly<Record<string, string | un
     ACCESS_TOKEN_AUDIENCE: z.string().min(1).default('flowforge-api'),
     ACCESS_TOKEN_LIFETIME_SECONDS: z.coerce.number().int().min(60).max(900).default(600),
     CORS_ALLOWED_ORIGINS: z.string().optional(),
-    API_HOST: z.string().min(1).default('127.0.0.1'),
+    API_HOST: z.string().min(1).optional(),
     API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    PORT: z.coerce.number().int().min(1).max(65535).optional(),
     SMTP_URL: z.string().url().optional(),
     SMTP_FROM: z.string().email().optional(),
     PUBLIC_APP_URL: z.string().url().optional(),
@@ -49,6 +50,12 @@ export function loadApiConfiguration(source: Readonly<Record<string, string | un
   }
   if (schema.data.NODE_ENV === 'production' && !schema.data.CORS_ALLOWED_ORIGINS) {
     throw new Error('CORS_ALLOWED_ORIGINS is required in production.');
+  }
+  if (schema.data.NODE_ENV === 'production' && schema.data.PORT === undefined) {
+    throw new Error('PORT is required in production.');
+  }
+  if (schema.data.NODE_ENV === 'production' && schema.data.API_HOST !== undefined && schema.data.API_HOST !== '0.0.0.0') {
+    throw new Error('API_HOST must be 0.0.0.0 in production.');
   }
   const hasMailConfig = Boolean(schema.data.SMTP_URL && schema.data.SMTP_FROM && schema.data.PUBLIC_APP_URL);
   if (schema.data.NODE_ENV === 'production' && !hasMailConfig) {
@@ -76,8 +83,8 @@ export function loadApiConfiguration(source: Readonly<Record<string, string | un
     tokenAudience: schema.data.ACCESS_TOKEN_AUDIENCE,
     accessTokenLifetimeSeconds: schema.data.ACCESS_TOKEN_LIFETIME_SECONDS,
     allowedOrigins,
-    host: schema.data.API_HOST,
-    port: schema.data.API_PORT,
+    host: schema.data.NODE_ENV === 'production' ? '0.0.0.0' : schema.data.API_HOST ?? '127.0.0.1',
+    port: schema.data.NODE_ENV === 'production' ? schema.data.PORT! : schema.data.API_PORT,
     ...(hasMailConfig ? { smtpUrl: schema.data.SMTP_URL, smtpFrom: schema.data.SMTP_FROM, publicAppUrl: schema.data.PUBLIC_APP_URL } : {}),
   });
 }

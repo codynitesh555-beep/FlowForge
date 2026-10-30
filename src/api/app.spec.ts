@@ -4,6 +4,7 @@ import { createApiApp } from './app.js';
 import type { ApiConfiguration } from './config.js';
 import type { AuthenticationService } from '../modules/identity/application/authentication.js';
 import type { RefreshSessionService } from '../modules/identity/infrastructure/refresh-sessions.js';
+import { RefreshTokenReplayError } from '../modules/identity/infrastructure/refresh-sessions.js';
 import type { PrismaOrganizationApplication, PrismaOrganizationMembershipResolver } from '../modules/identity/infrastructure/prisma-organizations.js';
 import type { ProjectTaskService } from '../modules/projects/contracts.js';
 import { ProjectTaskError } from '../modules/projects/domain/errors.js';
@@ -20,7 +21,7 @@ const issued = {
   sessionId: '9d8b9073-5ec8-46a7-9852-1587b52f59a2',
 };
 
-function makeApp(loggerStream?: Writable, readinessCheck = vi.fn(async () => undefined)) {
+function makeApp(loggerStream?: Writable, readinessCheck = vi.fn(async () => undefined), configuration: ApiConfiguration = config) {
   const authentication = {
     register: vi.fn(async () => user),
     login: vi.fn(async () => ({ user, tokens: issued })),
@@ -46,7 +47,7 @@ function makeApp(loggerStream?: Writable, readinessCheck = vi.fn(async () => und
     softDeleteTask: vi.fn(), analyzeProject: vi.fn(async () => ({ graphRevision: 0, projectDurationHours: 0, topologicalOrder: [], criticalTaskIds: [], criticalPaths: [], isCriticalPathsTruncated: false, taskMetrics: [] })),
     addDependency: vi.fn(), removeDependency: vi.fn(), listTaskDependencies: vi.fn(), assignTask: vi.fn(), unassignTask: vi.fn(), listTaskAssignments: vi.fn(),
   } as unknown as ProjectTaskService;
-  return { app: createApiApp({ configuration: config, checkDatabaseReadiness: readinessCheck, authentication, sessions, organizations, membershipResolver, projectTasks, loggerStream }), authentication, sessions, organizations, membershipResolver, projectTasks, readinessCheck };
+  return { app: createApiApp({ configuration, checkDatabaseReadiness: readinessCheck, authentication, sessions, organizations, membershipResolver, projectTasks, loggerStream }), authentication, sessions, organizations, membershipResolver, projectTasks, readinessCheck };
 }
 
 function captureLogs() {
@@ -74,6 +75,24 @@ describe('Fastify API', () => {
     expect(openapi.statusCode).toBe(200);
     expect(openapi.json().paths['/v1/auth/login']).toBeDefined();
     expect(openapi.json().paths['/v1/organizations/{organizationId}/projects/{projectId}/schedule']).toBeDefined();
+  });
+
+  it('disables Swagger UI and OpenAPI JSON in production while retaining Helmet security headers and API CSP', async () => {
+    const productionConfig: ApiConfiguration = { ...config, nodeEnv: 'production' };
+    const harness = makeApp(undefined, undefined, productionConfig); close = () => harness.app.close();
+
+    const ui = await harness.app.inject({ method: 'GET', url: '/documentation' });
+    const openapi = await harness.app.inject({ method: 'GET', url: '/documentation/json' });
+    const health = await harness.app.inject({ method: 'GET', url: '/healthz' });
+    const csp = health.headers['content-security-policy'];
+
+    expect(ui.statusCode).toBe(404);
+    expect(openapi.statusCode).toBe(404);
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(health.headers['x-content-type-options']).toBe('nosniff');
+    expect(health.headers['x-frame-options']).toBe('SAMEORIGIN');
   });
 
   it('keeps liveness independent of the database and reports readiness when the probe succeeds', async () => {
@@ -127,6 +146,7 @@ describe('Fastify API', () => {
     const harness = makeApp(); close = () => harness.app.close();
     const response = await harness.app.inject({
       method: 'POST', url: '/v1/auth/register',
+      headers: { origin: 'http://localhost:5173' },
       payload: { email: 'person@example.test', displayName: 'Person', password: 'this is a long password' },
     });
     expect(response.statusCode).toBe(201);
@@ -138,6 +158,7 @@ describe('Fastify API', () => {
     const harness = makeApp(); close = () => harness.app.close();
     const response = await harness.app.inject({
       method: 'POST', url: '/v1/auth/login',
+      headers: { origin: 'http://localhost:5173' },
       payload: { email: 'person@example.test', password: 'this is a long password' },
     });
     expect(response.statusCode).toBe(200);
@@ -158,13 +179,13 @@ describe('Fastify API', () => {
 
     const refreshed = await harness.app.inject({
       method: 'POST', url: '/v1/auth/refresh',
-      headers: { origin: 'http://localhost:5173', cookie: `flowforge_refresh=${issued.refreshToken}` },
+      headers: { origin: 'http://localhost:5173', cookie: `flowforge_refresh=${issued.refreshToken}`, 'x-flowforge-csrf': '1' },
     });
     expect(refreshed.statusCode).toBe(200);
     expect(refreshed.body).not.toContain('n'.repeat(43));
     expect(harness.sessions.rotate).toHaveBeenCalledOnce();
 
-    const loggedOut = await harness.app.inject({ method: 'POST', url: '/v1/auth/logout', headers: { authorization: 'Bearer test-token' } });
+    const loggedOut = await harness.app.inject({ method: 'POST', url: '/v1/auth/logout', headers: { authorization: 'Bearer test-token', origin: 'http://localhost:5173' } });
     expect(loggedOut.statusCode).toBe(204);
     expect(harness.sessions.logout).toHaveBeenCalledWith(issued.sessionId, user.id);
   });
@@ -177,6 +198,138 @@ describe('Fastify API', () => {
     expect(response.statusCode).toBe(403);
     expect(response.json()).toEqual({ code: 'ORIGIN_FORBIDDEN' });
     expect(harness.sessions.rotate).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'invalid'])('rejects refresh requests with a missing or invalid CSRF header (%s)', async (csrfHeader) => {
+    const harness = makeApp(); close = () => harness.app.close();
+    const headers: Record<string, string> = {
+      origin: 'http://localhost:5173',
+      cookie: `flowforge_refresh=${issued.refreshToken}`,
+    };
+    if (csrfHeader) headers['x-flowforge-csrf'] = csrfHeader;
+
+    const response = await harness.app.inject({ method: 'POST', url: '/v1/auth/refresh', headers });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ code: 'CSRF_FORBIDDEN' });
+    expect(harness.sessions.rotate).not.toHaveBeenCalled();
+  });
+
+  it('supports an allowlisted cross-site refresh with the CSRF header and secure production cookie attributes', async () => {
+    const productionConfig: ApiConfiguration = {
+      ...config,
+      nodeEnv: 'production',
+      allowedOrigins: new Set(['https://flowforge-ui.vercel.app']),
+    };
+    const harness = makeApp(undefined, undefined, productionConfig); close = () => harness.app.close();
+
+    const login = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/login',
+      headers: { origin: 'https://flowforge-ui.vercel.app' },
+      payload: { email: 'person@example.test', password: 'this is a long password' },
+    });
+    const loginCookie = String(login.headers['set-cookie']);
+    expect(login.statusCode).toBe(200);
+    expect(loginCookie).toContain('HttpOnly');
+    expect(loginCookie).toContain('Secure');
+    expect(loginCookie).toContain('SameSite=None');
+    expect(loginCookie).toContain('Path=/v1/auth');
+    expect(loginCookie).not.toMatch(/Domain=/i);
+
+    const refreshed = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/refresh',
+      headers: {
+        origin: 'https://flowforge-ui.vercel.app',
+        cookie: `flowforge_refresh=${issued.refreshToken}`,
+        'x-flowforge-csrf': '1',
+      },
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.headers['access-control-allow-origin']).toBe('https://flowforge-ui.vercel.app');
+    expect(refreshed.headers['access-control-allow-credentials']).toBe('true');
+
+    const preflight = await harness.app.inject({
+      method: 'OPTIONS', url: '/v1/auth/refresh',
+      headers: {
+        origin: 'https://flowforge-ui.vercel.app',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type,x-flowforge-csrf',
+      },
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe('https://flowforge-ui.vercel.app');
+    expect(preflight.headers['access-control-allow-headers']).toContain('X-FlowForge-CSRF');
+
+    const loggedOut = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/logout',
+      headers: { authorization: 'Bearer test-token', origin: 'https://flowforge-ui.vercel.app' },
+    });
+    const clearedCookie = String(loggedOut.headers['set-cookie']);
+    expect(loggedOut.statusCode).toBe(204);
+    expect(clearedCookie).toContain('flowforge_refresh=');
+    expect(clearedCookie).toContain('HttpOnly');
+    expect(clearedCookie).toContain('Secure');
+    expect(clearedCookie).toContain('SameSite=None');
+    expect(clearedCookie).toContain('Path=/v1/auth');
+    expect(clearedCookie).not.toMatch(/Domain=/i);
+  });
+
+  it('rejects missing and untrusted Origin on login and logout', async () => {
+    const harness = makeApp(); close = () => harness.app.close();
+    const missingLoginOrigin = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/login',
+      payload: { email: 'person@example.test', password: 'this is a long password' },
+    });
+    const untrustedLogoutOrigin = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/logout',
+      headers: { authorization: 'Bearer test-token', origin: 'https://attacker.example' },
+    });
+
+    expect(missingLoginOrigin.statusCode).toBe(403);
+    expect(untrustedLogoutOrigin.statusCode).toBe(403);
+    expect(harness.authentication.login).not.toHaveBeenCalled();
+    expect(harness.sessions.logout).not.toHaveBeenCalled();
+  });
+
+  it('rejects registration from an untrusted Origin before creating an account', async () => {
+    const harness = makeApp(); close = () => harness.app.close();
+    const response = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/register',
+      headers: { origin: 'https://attacker.example' },
+      payload: { email: 'person@example.test', displayName: 'Person', password: 'this is a long password' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ code: 'ORIGIN_FORBIDDEN' });
+    expect(harness.authentication.register).not.toHaveBeenCalled();
+  });
+
+  it('clears a replayed refresh cookie with matching production attributes and preserves family revocation handling', async () => {
+    const productionConfig: ApiConfiguration = {
+      ...config,
+      nodeEnv: 'production',
+      allowedOrigins: new Set(['https://flowforge-ui.vercel.app']),
+    };
+    const harness = makeApp(undefined, undefined, productionConfig); close = () => harness.app.close();
+    vi.mocked(harness.sessions.rotate).mockRejectedValueOnce(new RefreshTokenReplayError());
+
+    const response = await harness.app.inject({
+      method: 'POST', url: '/v1/auth/refresh',
+      headers: {
+        origin: 'https://flowforge-ui.vercel.app',
+        cookie: `flowforge_refresh=${issued.refreshToken}`,
+        'x-flowforge-csrf': '1',
+      },
+    });
+    const clearedCookie = String(response.headers['set-cookie']);
+
+    expect(response.statusCode).toBe(401);
+    expect(clearedCookie).toContain('flowforge_refresh=');
+    expect(clearedCookie).toContain('HttpOnly');
+    expect(clearedCookie).toContain('Secure');
+    expect(clearedCookie).toContain('SameSite=None');
+    expect(clearedCookie).toContain('Path=/v1/auth');
+    expect(clearedCookie).not.toMatch(/Domain=/i);
   });
 
   it('resolves organization scope from the authenticated user and rejects missing membership', async () => {

@@ -98,22 +98,33 @@ export function createApiApp(dependencies: ApiDependencies): FastifyInstance {
   });
 
   void app.register(cookie);
-  void app.register(helmet, { contentSecurityPolicy: false });
+  void app.register(helmet, configuration.nodeEnv === 'production' ? {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        baseUri: ["'none'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+  } : { contentSecurityPolicy: false });
   void app.register(cors, {
     origin: [...configuration.allowedOrigins],
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Authorization', 'Content-Type'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-FlowForge-CSRF'],
   });
   void app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
-  void app.register(swagger, {
-    openapi: {
-      info: { title: 'FlowForge API', version: '1.0.0', description: 'FlowForge organization and engineering workflow API.' },
-      components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
-    },
-    transform: jsonSchemaTransform,
-  });
-  void app.register(swaggerUi, { routePrefix: '/documentation' });
+  if (configuration.nodeEnv !== 'production') {
+    void app.register(swagger, {
+      openapi: {
+        info: { title: 'FlowForge API', version: '1.0.0', description: 'FlowForge organization and engineering workflow API.' },
+        components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
+      },
+      transform: jsonSchemaTransform,
+    });
+    void app.register(swaggerUi, { routePrefix: '/documentation' });
+  }
 
   app.setErrorHandler((error, request, reply) => {
     if (hasZodFastifySchemaValidationErrors(error)) {

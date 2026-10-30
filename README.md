@@ -28,13 +28,13 @@ is deliberately not exposed.
 - Vitest for unit, API, and database integration tests.
 
 The generated Prisma Client is written to `src/generated/prisma/` and is
-ignored by Git. Generate it after installing dependencies and configuring the
-local scratch environment.
+ignored by Git. Local generation uses the scratch configuration. Deployment
+generation uses the independent schema-only configuration and needs no
+database URL or credentials.
 
 ## Prerequisites
 
-- Node.js compatible with the locked dependencies (Prisma 7 requires a current
-  supported Node.js release) and npm.
+- Node.js 24.x and npm. `package.json` declares the supported Node range.
 - Docker Compose for the isolated local PostgreSQL option below, or a separate
   PostgreSQL instance configured for this project.
 
@@ -99,6 +99,10 @@ npm run db:generate
 npm run db:deploy
 ```
 
+For a cloud build, use `npm run db:generate:deploy`. It generates Prisma
+Client from the schema without loading scratch configuration or connecting to
+a database.
+
 `npm run db:generate` runs Prisma Client generation. There is no `npm run db`
 script. `npm run db:migrate` invokes `prisma migrate dev` and can create or
 apply migrations; use it only when intentionally developing schema changes on
@@ -152,7 +156,11 @@ valuable data.
 
 `npm run build` compiles the API and runs the production frontend build, so
 `VITE_API_BASE_URL` must be set to an HTTPS URL for the target API. No
-deployment automation is included yet.
+deployment automation is included yet. For Render's backend build, use
+`npm run build:render`; its start command is `npm run start:api`. Production
+binds to `0.0.0.0` and requires Render's injected `PORT`. See
+[Render deployment setup](RENDER_DEPLOYMENT.md) for the production variable
+names and service settings.
 
 ## Security and production readiness
 
@@ -167,6 +175,8 @@ deployment automation is included yet.
   injected `MIGRATION_DATABASE_URL` for migrations. See
   [Project Status](PROJECT_STATUS.md) for the full variable list and current
   production assessment.
+- Cross-site refresh-cookie requirements and browser limitations are documented
+  in [Cross-site authentication](CROSS_SITE_AUTH.md).
 - Production deployment is not ready: there is no application Dockerfile, CI
   or release workflow, or hosting manifest. Production database behavior,
   staging verification, backup/recovery procedures, proxy trust, distributed

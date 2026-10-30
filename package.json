@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "description": "FlowForge - Intelligent Engineering Workflow & Resource Allocation Platform",
   "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "scripts": {
     "build": "npm run build:api && npm run build:web",
     "build:api": "tsc",
+    "build:render": "npm run db:generate:deploy && npm run build:api",
     "build:web": "tsc -p tsconfig.web.json && vite build --config vite.config.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json",
     "dev:api": "tsx watch src/api/dev-api.ts",
@@ -16,6 +20,7 @@
     "test:watch": "vitest",
     "db:validate": "prisma validate --config prisma7.config.ts",
     "db:generate": "prisma generate --config prisma7.config.ts",
+    "db:generate:deploy": "prisma generate --config prisma7.generate.config.ts",
     "db:migrate": "prisma migrate dev --config prisma7.config.ts",
     "db:deploy": "prisma migrate deploy --config prisma7.config.ts",
     "db:deploy:production": "prisma migrate deploy --config prisma7.production.config.ts",

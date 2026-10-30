@@ -23,15 +23,42 @@ export interface AuthRouteOptions {
   readonly allowedOrigins: ReadonlySet<string>;
 }
 
-function setRefreshCookie(reply: FastifyReply, tokens: { refreshToken: string; refreshTokenExpiresAt: Date }, secure: boolean): void {
-  const maxAge = Math.max(0, Math.floor((tokens.refreshTokenExpiresAt.getTime() - Date.now()) / 1000));
-  reply.setCookie('flowforge_refresh', tokens.refreshToken, {
+const REFRESH_COOKIE_NAME = 'flowforge_refresh';
+const REFRESH_COOKIE_PATH = '/v1/auth';
+const CSRF_HEADER = 'x-flowforge-csrf';
+const CSRF_HEADER_VALUE = '1';
+
+function requireTrustedOrigin(
+  origin: string | undefined,
+  allowedOrigins: ReadonlySet<string>,
+  reply: FastifyReply,
+): boolean {
+  if (!origin || !allowedOrigins.has(origin)) {
+    reply.code(403).send({ code: 'ORIGIN_FORBIDDEN' });
+    return false;
+  }
+  return true;
+}
+
+function refreshCookieOptions(secure: boolean) {
+  return {
     httpOnly: true,
     secure,
-    sameSite: 'strict',
-    path: '/v1/auth',
+    sameSite: secure ? 'none' as const : 'strict' as const,
+    path: REFRESH_COOKIE_PATH,
+  };
+}
+
+function setRefreshCookie(reply: FastifyReply, tokens: { refreshToken: string; refreshTokenExpiresAt: Date }, secure: boolean): void {
+  const maxAge = Math.max(0, Math.floor((tokens.refreshTokenExpiresAt.getTime() - Date.now()) / 1000));
+  reply.setCookie(REFRESH_COOKIE_NAME, tokens.refreshToken, {
+    ...refreshCookieOptions(secure),
     maxAge,
   });
+}
+
+function clearRefreshCookie(reply: FastifyReply, secure: boolean): void {
+  reply.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions(secure));
 }
 
 export const authRoutes = (options: AuthRouteOptions): FastifyPluginAsync => async (fastify) => {
@@ -46,6 +73,7 @@ export const authRoutes = (options: AuthRouteOptions): FastifyPluginAsync => asy
       response: { 201: PublicUserSchema, 400: ErrorSchema, 409: ErrorSchema },
     },
   }, async (request, reply) => {
+    if (!requireTrustedOrigin(request.headers.origin, options.allowedOrigins, reply)) return;
     try {
       const user = await options.authentication.register(request.body);
       return reply.code(201).send(user);
@@ -67,6 +95,7 @@ export const authRoutes = (options: AuthRouteOptions): FastifyPluginAsync => asy
       response: { 200: AuthResponseSchema, 401: ErrorSchema },
     },
   }, async (request, reply) => {
+    if (!requireTrustedOrigin(request.headers.origin, options.allowedOrigins, reply)) return;
     try {
       const result = await options.authentication.login(request.body);
       setRefreshCookie(reply, result.tokens, options.cookieSecure);
@@ -91,8 +120,8 @@ export const authRoutes = (options: AuthRouteOptions): FastifyPluginAsync => asy
       response: { 200: TokenResponseSchema, 401: ErrorSchema, 403: ErrorSchema },
     },
   }, async (request, reply) => {
-    const origin = request.headers.origin;
-    if (!origin || !options.allowedOrigins.has(origin)) return reply.code(403).send({ code: 'ORIGIN_FORBIDDEN' });
+    if (!requireTrustedOrigin(request.headers.origin, options.allowedOrigins, reply)) return;
+    if (request.headers[CSRF_HEADER] !== CSRF_HEADER_VALUE) return reply.code(403).send({ code: 'CSRF_FORBIDDEN' });
     const refreshToken = request.cookies.flowforge_refresh;
     if (!refreshToken) return reply.code(401).send({ code: 'INVALID_REFRESH_TOKEN' });
     try {
@@ -100,7 +129,7 @@ export const authRoutes = (options: AuthRouteOptions): FastifyPluginAsync => asy
       setRefreshCookie(reply, tokens, options.cookieSecure);
       return reply.send({ accessToken: tokens.accessToken, accessTokenExpiresAt: tokens.accessTokenExpiresAt.toISOString() });
     } catch (error) {
-      reply.clearCookie('flowforge_refresh', { path: '/v1/auth' });
+      clearRefreshCookie(reply, options.cookieSecure);
       if (error instanceof InvalidRefreshTokenError || error instanceof RefreshTokenReplayError) {
         return reply.code(401).send({ code: 'INVALID_REFRESH_TOKEN' });
       }
@@ -116,8 +145,9 @@ export const authRoutes = (options: AuthRouteOptions): FastifyPluginAsync => asy
       response: { 204: z.null(), 401: ErrorSchema },
     },
   }, async (request, reply) => {
+    if (!requireTrustedOrigin(request.headers.origin, options.allowedOrigins, reply)) return;
     await options.sessions.logout(request.authContext!.sessionId, request.authContext!.userId);
-    reply.clearCookie('flowforge_refresh', { path: '/v1/auth' });
+    clearRefreshCookie(reply, options.cookieSecure);
     return reply.code(204).send(null);
   });
 };
