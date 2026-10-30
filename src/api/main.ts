@@ -82,9 +82,14 @@ export async function startApi(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void startApi().catch(() => {
-    // Do not print configuration, credentials, or provider error payloads.
-    process.stderr.write('FlowForge API startup failed. Check validated runtime configuration.\n');
+  void startApi().catch((error: unknown) => {
+    const errorName = error instanceof Error ? error.name : 'UnknownError';
+    const errorMessage = error instanceof Error ? error.message : 'Unknown startup failure';
+    const safeMessage = errorMessage
+      .replace(/(?:postgres|postgresql):\/\/\S+/gi, '[REDACTED_DATABASE_URL]')
+      .replace(/(password|secret|token|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]');
+
+    process.stderr.write(`FlowForge API startup failed [${errorName}]: ${safeMessage}\n`);
     process.exitCode = 1;
   });
 }

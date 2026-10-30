@@ -57,9 +57,20 @@ export function loadApiConfiguration(source: Readonly<Record<string, string | un
   if (schema.data.NODE_ENV === 'production' && schema.data.API_HOST !== undefined && schema.data.API_HOST !== '0.0.0.0') {
     throw new Error('API_HOST must be 0.0.0.0 in production.');
   }
-  const hasMailConfig = Boolean(schema.data.SMTP_URL && schema.data.SMTP_FROM && schema.data.PUBLIC_APP_URL);
-  if (schema.data.NODE_ENV === 'production' && !hasMailConfig) {
-    throw new Error('Secure SMTP, sender, and public application URL configuration is required in production.');
+  const hasSmtpConfig = Boolean(schema.data.SMTP_URL || schema.data.SMTP_FROM);
+
+  if (hasSmtpConfig && (!schema.data.SMTP_URL || !schema.data.SMTP_FROM || !schema.data.PUBLIC_APP_URL)) {
+    throw new Error('SMTP_URL, SMTP_FROM, and PUBLIC_APP_URL must be configured together.');
+  }
+
+  const hasMailConfig = Boolean(
+    schema.data.SMTP_URL &&
+    schema.data.SMTP_FROM &&
+    schema.data.PUBLIC_APP_URL
+  );
+
+  if (schema.data.NODE_ENV === 'production' && !schema.data.PUBLIC_APP_URL) {
+    throw new Error('PUBLIC_APP_URL is required in production.');
   }
   const allowedOrigins = parseOrigins(schema.data.CORS_ALLOWED_ORIGINS);
   if (schema.data.NODE_ENV === 'production' && [...allowedOrigins].some((origin) => !origin.startsWith('https://'))) {
