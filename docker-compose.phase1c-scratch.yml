@@ -1,0 +1,23 @@
+services:
+  postgres-phase1c-scratch:
+    image: postgres:16-alpine
+    container_name: flowforge-postgres-phase1c-scratch
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${SCRATCH_POSTGRES_USER:?Set SCRATCH_POSTGRES_USER in the scratch environment file}
+      POSTGRES_PASSWORD: ${SCRATCH_POSTGRES_PASSWORD:?Set SCRATCH_POSTGRES_PASSWORD in the scratch environment file}
+      POSTGRES_DB: flowforge_migration_scratch
+    ports:
+      - "127.0.0.1:5543:5432"
+    volumes:
+      - flowforge_pgdata_phase1c_scratch:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  flowforge_pgdata_phase1c_scratch:
+    name: flowforge_pgdata_phase1c_scratch

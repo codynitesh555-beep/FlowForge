@@ -1,0 +1,244 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+
+  @@map("membership_role")
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+
+  @@map("membership_status")
+}
+
+model Organization {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String       @db.VarChar(160)
+  slug        String       @unique @db.VarChar(80)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  memberships Membership[]
+  projects    Project[]
+  activity    ActivityLog[]
+  outbox      OutboxEvent[]
+  invitations OrganizationInvitation[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique @db.VarChar(320)
+  displayName  String       @map("display_name") @db.VarChar(160)
+  passwordHash String?      @map("password_hash") @db.VarChar(255)
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  memberships  Membership[]
+  activity     ActivityLog[]
+  sessions     AuthSession[]
+  passwordResetTokens PasswordResetToken[]
+  sentInvitations OrganizationInvitation[] @relation("InvitationInvitedBy")
+
+  @@map("users")
+}
+
+model Membership {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  role           MembershipRole   @default(MEMBER)
+  status         MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  assignments    TaskAssignment[]
+
+  @@unique([organizationId, userId])
+  @@unique([id, organizationId, userId])
+  @@index([userId, status])
+  @@map("memberships")
+}
+
+model Project {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  name           String       @db.VarChar(200)
+  description    String?      @db.Text
+  graphRevision  Int          @default(0) @map("graph_revision")
+  archivedAt     DateTime?    @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  tasks          Task[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+  @@map("projects")
+}
+
+model Task {
+  id               String           @id @default(uuid()) @db.Uuid
+  projectId        String           @map("project_id") @db.Uuid
+  organizationId   String           @map("organization_id") @db.Uuid
+  name             String           @db.VarChar(240)
+  description      String?          @db.Text
+  optimisticHours  Decimal          @map("optimistic_hours") @db.Decimal(10, 4)
+  likelyHours      Decimal          @map("likely_hours") @db.Decimal(10, 4)
+  pessimisticHours Decimal          @map("pessimistic_hours") @db.Decimal(10, 4)
+  expectedHours    Decimal          @default(0) @map("expected_hours") @db.Decimal(10, 4)
+  varianceHours    Decimal          @default(0) @map("variance_hours") @db.Decimal(15, 4)
+  slackHours       Decimal?         @map("slack_hours") @db.Decimal(10, 4)
+  version          Int              @default(1)
+  deletedAt        DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  project          Project          @relation(fields: [projectId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  prerequisiteFor  TaskDependency[] @relation("TaskDependencyPrerequisite")
+  dependentOn      TaskDependency[] @relation("TaskDependencyDependent")
+  assignments      TaskAssignment[]
+
+  @@unique([id, projectId, organizationId])
+  @@index([organizationId, projectId, deletedAt])
+  @@map("tasks")
+}
+
+model TaskDependency {
+  id                   String @id @default(uuid()) @db.Uuid
+  projectId            String @map("project_id") @db.Uuid
+  organizationId       String @map("organization_id") @db.Uuid
+  prerequisiteTaskId   String @map("prerequisite_task_id") @db.Uuid
+  dependentTaskId      String @map("dependent_task_id") @db.Uuid
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  removedAt            DateTime? @map("removed_at") @db.Timestamptz(6)
+  prerequisite         Task @relation("TaskDependencyPrerequisite", fields: [prerequisiteTaskId, projectId, organizationId], references: [id, projectId, organizationId], onDelete: Restrict)
+  dependent            Task @relation("TaskDependencyDependent", fields: [dependentTaskId, projectId, organizationId], references: [id, projectId, organizationId], onDelete: Restrict)
+
+  // A custom migration adds an active-edge partial unique index; Prisma cannot express its predicate.
+  @@index([organizationId, projectId, prerequisiteTaskId])
+  @@index([organizationId, projectId, dependentTaskId])
+  @@map("task_dependencies")
+}
+
+model TaskAssignment {
+  id             String      @id @default(uuid()) @db.Uuid
+  taskId         String      @map("task_id") @db.Uuid
+  projectId      String      @map("project_id") @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  membershipId   String      @map("membership_id") @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  assignedAt     DateTime    @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  unassignedAt   DateTime?   @map("unassigned_at") @db.Timestamptz(6)
+  task           Task        @relation(fields: [taskId, projectId, organizationId], references: [id, projectId, organizationId], onDelete: Restrict)
+  membership     Membership  @relation(fields: [membershipId, organizationId, userId], references: [id, organizationId, userId], onDelete: Restrict)
+
+  @@index([organizationId, taskId, assignedAt])
+  @@index([organizationId, membershipId, assignedAt])
+  @@map("task_assignments")
+}
+
+model ActivityLog {
+  id               String        @id @default(uuid()) @db.Uuid
+  organizationId   String        @map("organization_id") @db.Uuid
+  actorUserId      String?       @map("actor_user_id") @db.Uuid
+  actorDisplayName String        @map("actor_display_name") @db.VarChar(160)
+  action           String        @db.VarChar(120)
+  aggregateType    String?       @map("aggregate_type") @db.VarChar(80)
+  aggregateId      String?       @map("aggregate_id") @db.Uuid
+  payload          Json          @default("{}") @db.JsonB
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  organization     Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor            User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, aggregateType, aggregateId])
+  @@map("activity_logs")
+}
+
+model OutboxEvent {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  aggregateType  String        @map("aggregate_type") @db.VarChar(80)
+  aggregateId    String        @map("aggregate_id") @db.Uuid
+  eventType      String        @map("event_type") @db.VarChar(160)
+  payload        Json          @db.JsonB
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  availableAt    DateTime      @default(now()) @map("available_at") @db.Timestamptz(6)
+  attempts       Int           @default(0)
+  processedAt    DateTime?     @map("processed_at") @db.Timestamptz(6)
+  lastError      String?       @map("last_error") @db.Text
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([processedAt, availableAt, createdAt])
+  @@index([organizationId, aggregateType, aggregateId])
+  @@map("outbox_events")
+}
+
+/// A row represents one refresh-token generation. Only SHA-256 token hashes
+/// are stored; family revocation invalidates every generation in a chain.
+model AuthSession {
+  id               String    @id @default(uuid()) @db.Uuid
+  familyId         String    @map("family_id") @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash") @db.Char(64)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  familyExpiresAt  DateTime  @map("family_expires_at") @db.Timestamptz(6)
+  consumedAt       DateTime? @map("consumed_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  user             User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([familyId, revokedAt])
+  @@index([userId, revokedAt, expiresAt])
+  @@map("auth_sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model OrganizationInvitation {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  invitedEmail   String        @map("invited_email") @db.VarChar(320)
+  role           MembershipRole
+  tokenHash      String        @unique @map("token_hash") @db.Char(64)
+  invitedByUserId String       @map("invited_by_user_id") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt      DateTime      @map("expires_at") @db.Timestamptz(6)
+  acceptedAt     DateTime?     @map("accepted_at") @db.Timestamptz(6)
+  revokedAt      DateTime?     @map("revoked_at") @db.Timestamptz(6)
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  invitedBy      User          @relation("InvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, invitedEmail])
+  @@index([expiresAt])
+  @@map("organization_invitations")
+}

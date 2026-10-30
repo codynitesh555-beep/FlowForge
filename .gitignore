@@ -1,0 +1,55 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+coverage/
+
+# Environment Variables: ignore dotenv files unless they are safe templates.
+.env*
+!.env.example
+!.env.phase1c-scratch.local.example
+!.env.production.local.example
+
+# Keep the explicit local-secret exclusions for clarity and compatibility.
+.env
+.env.local
+.env.*.local
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local databases and database dumps. Keep prisma/migrations/*.sql trackable.
+*.dump
+*.sqlite*
+*.db
+*.backup
+
+# Temporary/editor files and local caches
+*.tmp
+*.swp
+*.swo
+*.swn
+*.swm
+.*.swp
+.*.swo
+.*.swn
+.*.swm
+*~
+.cache/
+.vite/
+.vitest/
+
+# Workstation-provided assistant skill bundles and their symlinks
+/.agents/
+/.claude/
+/.windsurf/
+/skills-lock.json
+
+# Legacy local database configuration has a default credential and protected port.
+/docker-compose.yml
+
+# Generated Prisma Client
+/src/generated/prisma/
